@@ -147,7 +147,7 @@ To connect, any serial terminal emulator should work, but we recommend:
 
 Example linux connection:
 
-	minicom -D /dev/ttyACM1 -b 115200 
+	minicom -D /dev/RFIDler -b 115200 
 
 Once connected, hit `<ENTER>` to see the HELP screen and switch to CLI mode, or send commands to remain in API mode.
 
