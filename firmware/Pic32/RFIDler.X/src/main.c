@@ -187,7 +187,7 @@ unsigned int     EMU_Repeat;                    // Number of times to transmit f
 BOOL             EMU_Background= FALSE;         // Emulate in the background until told to stop
 unsigned int     EMU_DataBitRate;               // Number of Frame Clocks per bit
 BYTE             TmpBits[TMP_LARGE_BUFF_LEN];   // Shared scratchpad
-BYTE             ReaderPeriod= FALSE;           // reder period flag for analogue display - toggled by reader ISR
+volatile BYTE    ReaderPeriod= FALSE;           // reder period flag for analogue display - toggled by reader ISR
 BOOL             FakeRead= FALSE;               // flag for analogue sampler to signal it wants access to buffers during read
 BOOL             PWD_Mode= FALSE;               // is this tag password protected?
 BYTE Password[9]= {0, 0, 0, 0, 0, 0, 0, 0, 0};  // 32 bits as HEX string set with LOGIN
@@ -840,6 +840,7 @@ void show_usage(char *command)
         "AUTORATE                                                     Auto-Detect data rate\r\n",
         "AUTORUN [OFF | COMMAND [ARGS]]                               Set/Show startup command\r\n",
         "AUTOTAG                                                      Auto-Detect TAG type\r\n",
+        "DIGITAL[N] <# OF SAMPLES>                                    Binary sample and output in XML (HEX). Allows up to 32k samples\r\n",
         "BINTOHEX <BIN>                                               Show BINARY as HEX string\r\n",
         "BL                                                           Reboot in BOOTLOADER mode\r\n",
         "CLI                                                          Switch to CLI mode\r\n",
@@ -987,7 +988,7 @@ BYTE ProcessSerialCommand(char *command)
             else
             {
                 commandok= command_ack(DATA);
-                analogue_sample(tmpint, TRUE);
+                tmpint = analogue_sample(tmpint, TRUE);
                 analogue_xml_out(tmpint);
                 eod();
             }
@@ -1007,6 +1008,31 @@ BYTE ProcessSerialCommand(char *command)
                 commandok= command_ack(DATA);
                 analogue_sample(tmpint, FALSE);
                 analogue_xml_out(tmpint);
+                eod();
+            }
+        }
+        else
+            commandok= command_nack("Invalid number of samples!");
+    }
+
+    if (strncmp(command, "DIGITAL ", 8) == 0 ||
+            strncmp(command, "DIGITALN ", 9) == 0)
+    {
+        int offset = 8;
+        if  (strncmp(command, "DIGITALN ", 9) == 0)
+        {
+            offset = 9;
+        }
+        
+        if(sscanf(command + offset, "%d", &tmpint) == 1)
+        {
+            if(RFIDlerConfig.TagType == TAG_TYPE_NONE)
+                commandok= command_nack("Set TAG type first!");
+            else
+            {
+                commandok= command_ack(DATA);
+                tmpint = digital_sample(tmpint, offset != 9);
+                digital_xml_out(tmpint);
                 eod();
             }
         }
