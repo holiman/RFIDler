@@ -159,6 +159,18 @@ def output(message):
     if not Quiet:
         print message
 
+def count_changes(data):
+    periods =  []
+    count =0
+    prev = data[0]
+    for v in data:
+        if prev == v:
+            count += 1
+        else:
+            periods.append(count)
+            prev = v
+            count = 1
+    return periods
 
 def store_data(data,  filename_prefix = "dump"):
     root = ET.fromstring(''.join(data))
@@ -180,31 +192,47 @@ def load_data(fname):
 
 
 
-def autocorr(data):
+def plot_autocorr(axis, data, length  = 400, color = 'g'):
     """
     See 
     http://stackoverflow.com/questions/643699/how-can-i-use-numpy-correlate-to-do-autocorrelation
     """
-    x1 = 400 
-    x2 = 1000
+    
+    result = numpy.correlate( data,data[:length], mode='full')
+    autoc = result[length-1:]
 
-    result1 = numpy.correlate( data,data[:x1], mode='full')
-    result2 = numpy.correlate( data,data[:x2], mode='full')
-    print(len(result1))
+    axis.plot(range(len(autoc)) , autoc , range(len(autoc)) , "-", color=color,label = "Autocorrelation (size %d)" % length)
 
-    print(len(result2))
-    print(len(data))
-    #return (result1, result2)
-    return (result1[x1-1:], result2[x2-1:])
+def show_bitstream(bit_periods,  reader_out):
+    x = 0
+    binary_out = ""
+    for i in bit_periods:
+        bit = reader_out[x]
+        binary_out += str(bit)
+        x += bit_periods[i]
 
-def plot_data(data):
+    print("Bitstream: %s" % binary_out)
+    # Hex stream
+    # Show as a sliding window.
+    for offset in range (0,8):
+        # Split in chunks of eight
+        hexbinary = [binary_out[i:i+8] for i in range(offset, len(binary_out), 8)]
+        _hex = ["%02x" % int(bin, 2) for bin in hexbinary]
+        print("Hexstream (offset %d): %s" % (offset," ".join(_hex)))
+
+
+
+def plot_data(data, digital=False):
     
     # create graphic objects
 #    fig, ax1 = pyplot.subplots()
+    ax_corr = None
+
     fig, (ax1, ax_corr) = pyplot.subplots(2)
 
-    # we need second subplot for voltage scale
-    ax2 = ax1.twinx()
+    # label 
+    ax1.set_xlabel('Sample Number')
+    ax1.legend(loc=2)
 
     # get xml sections
     xml = ET.fromstring(''.join(data))
@@ -212,129 +240,121 @@ def plot_data(data):
     tag = xml.find('Tag')
     pots = xml.find('Pots')
 
+    # Set title
+    title = tag.find('Tag_Type')
+    pyplot.title('RFIDler - ' + title.find('Data').text)
+
+
+    def readxml_data(x):
+        if samples.find(x) is None:
+            return None
+        data = samples.find(x).find('Data')
+        out = data.text.replace(' ', '')
+        out = map(ord, out.decode("hex"))
+        return out
+
     # raw coil data
-    raw = samples.find('Coil_Data')
-    data = raw.find('Data')
-    out = data.text.replace(' ', '')
-    out = map(ord, out.decode("hex"))
-    out[:] = [x * ADC_To_Volts for x in out]
-    x = range(len(out))
-    ax2.plot(x, out, color='b', label="Raw Data")
-
+    coil_out = readxml_data('Coil_Data')
     # reader HIGH/LOW
-    raw = samples.find('Reader_Output')
-    data = raw.find('Data')
-    out = data.text.replace(' ', '')
-    out = map(ord, out.decode("hex"))
+    reader_out = readxml_data('Reader_Output')
+    # bit period
+    bitperiod_out = readxml_data('Bit_Period')
+    
+    pyplot.xlim(0, len(reader_out))
 
+    if coil_out:
+        #Raw coil readings
+        coil_out = [x * ADC_To_Volts for x in coil_out]
+        x = range(len(coil_out))
+
+        # ADC scale needs to match volts (5v / 3.3v)
+        ax1.set_ylim(-5, 256 * 1.515151515)
+        
+        ax1.set_ylabel('Signal Strength (ADC)')
+
+        # we need second subplot for voltage scale
+        ax2 = ax1.twinx()
+        ax2.plot(x, coil_out, color='b', label="Raw Data")
+
+        # pot settings
+        color = 'r'
+        for element in 'Pot_High', 'Pot_Low':
+            pot_data = pots.find(element).find('Data').text
+            p_volts = float(pot_data) * POT_To_Volts
+            ax2.axhline(y=p_volts,color=color,label= ' %0.2fv (Pot: %s)' % (p_volts,pot_data))
+            color = 'm'
+
+
+        # volts scale up to 5.0v as that is max pot setting
+        # note that the ADC will clip at 3.3v, so although we can use a higher pot setting,
+        # we can't see token samples above 3.3v
+        ax2.set_ylim(0, 5.0)
+        ax2.set_ylabel('Signal Strength (Volts)', rotation=270)
+        ax2.legend(loc=1)
+    
+    x = range(len(reader_out))
     #Use a counter to help calc bit period
     count = 0
-    prev = out[0]
+    prev = reader_out[0]
     bitcounts = []
 
     # convert to value that will show on scale
-    for i in range(len(out)):
-        if out[i] != prev:
-            prev = out[i]
-            bitcounts.append(count)
-            count = 1
-        else:
-            count = count +1
+    def rescale(upperval,lowerval, selectval):
+        def fun(x):
+            if x > selectval:
+                return upperval
+            return lowerval
+        return fun
 
-        if out[i]:
-            out[i] = 258
-        else:
-            out[i] = 4
+    reader_out = map(rescale(258,4,0), reader_out)
 
-    print("Bit periods")
-    print(bitcounts)
     
-    print("Most common bit periods:")
-    print("\n".join(["%d : %d" % kv for kv in collections.Counter(bitcounts).most_common(10)]))
-
- #   Not  yet finished
     ax_corr2 = ax_corr.twinx()
-    #Show autocorrelation
-    #Some test-data
-    #x_data = [0]*200+[1,2,3,4,5,6,7,8,9,500]*10+[0]*200
-    #x_data = x_data+x_data+x_data+x_data
-    #Autocorrelation should be best at 500, there's a 500 repeater period (2000 samples)
-    (autoc_1, autoc_2) = autocorr(out)
-    ax_corr.plot(range(len(autoc_1)) , autoc_1 , range(len(autoc_1)) , "-", color='b',label = "Autocorrelation (full)")
-    ax_corr2.plot(range(len(autoc_2)) , autoc_2 , range(len(autoc_2)) , "-", color='g',label = "Autocorrelation (500 samples)")
 
+    plot_autocorr(ax_corr, reader_out, 400, color='b')
+    plot_autocorr(ax_corr2, reader_out, 2000, color='g')
 
-    ax1.plot(x, out, '-', color='g', label='Reader Logic')
+    ax_corr.legend(loc=1)
+    ax_corr2.legend(loc=2)
+
+    # Show reader logic
+    ax1.plot(x, reader_out, '-', color='g', label='Reader Logic')
     # show compressed version
-    for i in range(len(out)):
-        if out[i] == 258:
-            out[i] = 320
-        else:
-            out[i] = 300
-    ax1.plot(x, out, '-', color='g')
+    reader_out = map(rescale(320,300, 257), reader_out)
 
-    # ax1.text(-10, out[0], 'Reader Logic', color= 'g', ha= 'right', va= 'center')
+    ax1.plot(x, reader_out, '-', color='g')
 
-    # bit period
-    raw = samples.find('Bit_Period')
-    data = raw.find('Data')
-    out = data.text.replace(' ', '')
-    out = map(ord, out.decode("hex"))
+    bit_periods =  count_changes(bitperiod_out)
+
+
     # show bit period as single vertical stripe
-    prev = out[0]
-    fill = 0
-    fill1 = 0
-    toggle = True
-    for i in range(len(out)):
-        if out[i] != prev:
-            prev = out[i]
-            if fill1:
-                fill = fill1
-                fill1 = i
-            else:
-                fill1 = i
-            # fill every other stripe
-            if toggle:
-                ax1.axvspan(fill, fill1, facecolor='r', alpha=0.1)
-            toggle = not toggle
+    z = 0
+    i = 0
+    while i < len(bit_periods): 
+        if i % 2 == 0:
+            ax1.axvspan(z, z+ bit_periods[i], facecolor = 'r', alpha = 0.1)
+        z += bit_periods[i]
+        i += 1
+
     # find first stripe and add legend
-    for i in range(len(out)):
-        if (out[i]):
+    for i in range(len(bitperiod_out)):
+        if (bitperiod_out[i]):
             break
     legend = tag.find('Data_Rate')
     data = legend.find('Data').text
-    ax1.text(i + ((fill1 - fill) / 2), -10, 'Bit Period\n%s FCs' % data, color='r', alpha=0.5, rotation=270,
+    ax1.text(i + (bit_periods[0] / 2), -10, 'Bit Period\n%s FCs' % data, color='r', alpha=0.5, rotation=270,
              ha='center', va='top')
 
+    # Show the most common bit-toggling periods observed 
+    reader_bit_periods =  count_changes(reader_out)
+    print("Most common bit periods:")
+    print("\n".join(["%d : %d" % kv for kv in collections.Counter(reader_bit_periods).most_common(10)]))
 
-    # pot settings
-    color = 'r'
-    for element in 'Pot_High', 'Pot_Low ':
-        raw = pots.find(element.strip())
-        data = raw.find('Data').text
-        # convert pot setting to volts
-        out = [float(data) * POT_To_Volts] * len(x)
-        ax2.plot(x, out, '--', color=color,
-                 label=element + ' %0.2fv (Pot: %s)' % (float(data) * POT_To_Volts, data))
-        # ax2.text(len(x) + 16, out[0], '%s: %0.2fv\n(%s)' % (element, float(data) * POT_To_Volts, data), color= color)
-        color = 'm'
+    #Display the bitstream and hexstream
+    show_bitstream(bit_periods,  map(rescale(1,0,301), reader_out))
 
-    # done - label and show graph
-    # ADC scale needs to match volts (5v / 3.3v)
-    ax1.set_ylim(-5, 256 * 1.515151515)
-    title = tag.find('Tag_Type')
-    pyplot.xlim(0, len(x))
-    pyplot.title('RFIDler - ' + title.find('Data').text)
-    ax1.set_ylabel('Signal Strength (ADC)')
-    ax1.set_xlabel('Sample Number')
-    ax1.legend(loc=2)
+
     fig.canvas.set_window_title('RFIDler plot')
-    # volts scale up to 5.0v as that is max pot setting
-    # note that the ADC will clip at 3.3v, so although we can use a higher pot setting,
-    # we can't see token samples above 3.3v
-    ax2.set_ylim(0, 5.0)
-    ax2.set_ylabel('Signal Strength (Volts)', rotation=270)
-    ax2.legend(loc=1)
     pyplot.show()
 
 if len(sys.argv) < 3:
@@ -343,15 +363,22 @@ if len(sys.argv) < 3:
 
    Commands:
 
-     DEBUG <OFF|ON>                      Show serial comms
-     FLASH[P] <IMAGE.HEX>                Set bootloader mode and flash IMAGE.HEX [in Production mode]
-     PLOT[N] <SAMPLES>                   Plot raw coil samples ([N]o local clock)
-     STORE[N] <SAMPLES> <file_prefix>    Save raw coil samples to file ([N]o local clock)
-     LOAD <file>                         Load and plot saved sample-file        
-     PROMPT <MESSAGE>                    Print MESSAGE and wait for <ENTER>
-     QUIET                               Supress confirmation of sent command (show results only)
-     SLEEP <SECONDS>                     Pause for SECONDS
-     TEST                                Run hardware manufacting test suite
+     DEBUG <OFF|ON>                           Show serial comms
+     FLASH[P] <IMAGE.HEX>                     Set bootloader mode and flash IMAGE.HEX [in Production mode]
+     PLOT [-n] [-d] <SAMPLES>                 Plot raw coil samples 
+                                                 <SAMPLES>      The number of samples to request
+                                                 -n             No local clock (sniffmode)
+                                                 -d             digital mode, enables up to 32k samples
+     STORE [-n] [-d] <SAMPLES> <file_prefix>  Save raw coil samples to file
+                                                 <SAMPLES>      The number of samples to request
+                                                 -n             No local clock (sniffmode)
+                                                 -d             digital mode, enables up to 32k samples
+                                                 <file_prefix>  The prefix for the file to save into
+     LOAD <file>                              Load and plot saved sample-file        
+     PROMPT <MESSAGE>                         Print MESSAGE and wait for <ENTER>
+     QUIET                                    Supress confirmation of sent command (show results only)
+     SLEEP <SECONDS>                          Pause for SECONDS
+     TEST                                     Run hardware manufacting test suite
     
    Commands will be executed sequentially.
    Unrecognised commands will be passed directly to RFIDler.
@@ -434,23 +461,42 @@ while current < len(sys.argv):
     if command == 'XKCD':
         pyplot.xkcd()
         continue
+    if command in ['PLOT', 'STORE']:
+        #Check switches, starts with -
+        digital = False
+        no_local_clock = False
+        print("Next two arguments:", sys.argv[current:current+2])
+        if "-d" in sys.argv[current:current+2]:
+            digital = True
+        if "-n" in sys.argv[current:current+2]:
+            no_local_clock = True
 
-    if command in ['PLOT', 'PLOTN', 'STORE', 'STOREN', 'LOAD']:
-        if command in ['PLOT', 'STORE']:
-            result, data = rfidler.command('ANALOGUE %s' % sys.argv[current])
-        elif command in ['PLOTN', 'STOREN']:
-            result, data = rfidler.command('ANALOGUEN %s' % sys.argv[current])
+        _cmd = "ANALOGUE"
+        if digital:
+            _cmd = "DIGITAL"
+            current += 1
+        if no_local_clock:
+            _cmd += "N"
+            current += 1
+        
+        num_samples = int(sys.argv[current])
+        current += 1
+        result, data = rfidler.command('%s %d' % (_cmd, num_samples))
+        if result:
+            if command == "PLOT":
+                plot_data(data)
+            else:# 'STORE'
+                filename_prefix = sys.argv[current]
+                store_data(data, filename_prefix)
+                current += 1
         else:
-            result, data = load_data(sys.argv[current])
-
+            output('Failed: ' + data)
+        continue
+    if command == 'LOAD':
+        result, data = load_data(sys.argv[current])
         current += 1
         if result:
-            if command in ['PLOT', 'PLOTN','LOAD']:
-                plot_data(data)
-            else:
-                # Store
-                store_data(data, sys.argv[current])
-                current += 1
+            plot_data(data)
         else:
             output('Failed: ' + data)
         continue
